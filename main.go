@@ -1,13 +1,14 @@
 package main
 
 import (
+		"context"
         "fmt"
         "log"
         "net/http"
         "os"
-        "github.com/gunrgnhsr/CycloudServer"
-        "github.com/gunrgnhsr/CycloudServer/handlers"
 
+		"github.com/gunrgnhsr/Cycloud/pkg/db"
+        "github.com/gunrgnhsr/Cycloud/pkg/handlers"
         "github.com/joho/godotenv"
 )
 
