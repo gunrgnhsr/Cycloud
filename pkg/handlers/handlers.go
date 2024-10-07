@@ -1,18 +1,20 @@
 package handlers
 
 import (
-    "database/sql"
-    "encoding/json"
-    "net/http"
-    "io"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"time"
 
-    "github.com/google/uuid"
-    "github.com/gunrgnhsr/Cycloud/pkg/models"
-    "github.com/gunrgnhsr/Cycloud/pkg/auth"
-
+	"github.com/google/uuid"
+	"github.com/gunrgnhsr/Cycloud/pkg/auth"
+	"github.com/gunrgnhsr/Cycloud/pkg/models"
 )
+
 // handleCORS sets the CORS headers in the response
-func handleCORS(w http.ResponseWriter, r *http.Request, headers string) {
+func handleCORS(w http.ResponseWriter, r *http.Request, headers string) bool {
         // Get the Origin header from the request
         origin := r.Header.Get("Origin")
 
@@ -24,13 +26,63 @@ func handleCORS(w http.ResponseWriter, r *http.Request, headers string) {
         // Handle preflight requests
         if r.Method == http.MethodOptions {
                 w.WriteHeader(http.StatusOK) // Return 200 OK for preflight requests
-                return
+                return true
         }
+
+        return false
+}
+
+// CheckAuthorization checks if the request is authorized by validating the JWT token
+func CheckAuthorization(w http.ResponseWriter, r *http.Request) (string, error) {
+        // Get the token from the Authorization header
+        tokenString := r.Header.Get("Authorization")
+        if tokenString == "" {
+                return "", errors.New("missing token")
+        }
+
+        // Validate the token
+        claims, err := auth.ValidateJWT(tokenString)
+        if err != nil {
+                return "", errors.New("invalid token")
+        }
+
+        // Get the database connection from the request context
+        db := r.Context().Value("db").(*sql.DB)
+
+        // Check if the token exists in the tokens table
+        var username string
+        err = db.QueryRow("SELECT username FROM tokens WHERE token = $1", tokenString).Scan(&username)
+        if err != nil {
+                if err == sql.ErrNoRows {
+                        return "", errors.New("token not found")
+                }
+                return "", errors.New("failed to check token")
+        }
+
+        if username == "" {
+                return "", errors.New("token not found")
+        }
+
+        // Check if the token is expired
+        if claims.ExpiresAt < time.Now().Unix() {
+                // Remove the expired token from the database
+                _, err = db.Exec("DELETE FROM tokens WHERE token = $1", tokenString)
+                if err != nil {
+                        return "", errors.New("failed to remove expired token")
+                }
+                return "", errors.New("token expired")
+        }
+
+        // Return the username in the response
+        return username, nil
+
+
 }
 
 // Login handles user login and generates a JWT
 func Login(w http.ResponseWriter, r *http.Request) {
         handleCORS(w, r, "Authorization")
+                
         // Parse the request body to get username and password
         var credentials struct {
                 Username string `json:"username"`
@@ -42,12 +94,45 @@ func Login(w http.ResponseWriter, r *http.Request) {
                 return
         }
 
-        // TODO: Authenticate the user against your database or other authentication system
+        // Get the database connection from the request context
+        db := r.Context().Value("db").(*sql.DB)
+
+        // Query the database to check if the user exists and the password matches
+        var storedPassword string
+        err = db.QueryRow("SELECT password FROM users WHERE username = $1", credentials.Username).Scan(&storedPassword)
+        if err != nil {
+                if err == sql.ErrNoRows {
+                        // Register the new user
+                        _, err = db.Exec("INSERT INTO users (username, password) VALUES ($1, $2)", credentials.Username, credentials.Password)
+                        if err != nil {
+                                http.Error(w, "Failed to register user", http.StatusInternalServerError)
+                                return
+                        }else{
+                                w.WriteHeader(http.StatusCreated)
+                        }
+                } else {
+                        http.Error(w, "Failed to authenticate user", http.StatusInternalServerError)
+                        return
+                }
+        } else {
+                // Compare the stored password with the provided password
+                if storedPassword != credentials.Password {
+                        http.Error(w, "Invalid username or password", http.StatusUnauthorized)
+                        return
+                }
+        }
 
         // Generate a JWT token
         tokenString, err := auth.GenerateJWT(credentials.Username, "client")
         if err != nil {
                 http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+                return
+        }
+
+        // Insert the generated token into the database
+        _, err = db.Exec("INSERT INTO tokens (username, token) VALUES ($1, $2)", credentials.Username, tokenString)
+        if err != nil {
+                http.Error(w, "Failed to store token", http.StatusInternalServerError)
                 return
         }
 
@@ -57,16 +142,26 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles user logout by invalidating the JWT token
 func Logout(w http.ResponseWriter, r *http.Request) {
-        handleCORS(w, r, "Authorization")
-        
-        // Invalidate the token (this is a placeholder, actual implementation may vary)
-        token := r.Header.Get("Authorization")
-        if token == "" {
-                http.Error(w, "Missing token", http.StatusBadRequest)
+        if handleCORS(w, r, "Authorization"){
                 return
         }
 
+        username, err := CheckAuthorization(w, r)
+        if err != nil {
+                http.Error(w, err.Error(), http.StatusUnauthorized)
+                return
+        }
+        
         // TODO: Add the token to a blacklist or perform other invalidation logic
+        // Get the database connection from the request context
+        db := r.Context().Value("db").(*sql.DB)
+
+        // Remove the token from the database
+        _, err = db.Exec("DELETE FROM tokens WHERE username = $1", username)
+        if err != nil {
+                http.Error(w, "Failed to remove token", http.StatusInternalServerError)
+                return
+        }
         // For example, you could store invalidated tokens in a database or in-memory store
 
         // Return a success response

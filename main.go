@@ -35,12 +35,17 @@ func main() {
         if err != nil {
                 panic(err)
         }
-        defer db.Close()
 
         // Set up routes and middleware        
-        http.HandleFunc("/login", handlers.Login);
+        http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+                r = r.WithContext(context.WithValue(r.Context(), "db", db))
+                handlers.Login(w, r)
+        })
 
-        http.HandleFunc("/logout", handlers.Logout);
+        http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
+                r = r.WithContext(context.WithValue(r.Context(), "db", db))
+                handlers.Logout(w, r)
+        })
         
         http.HandleFunc("/resources", func(w http.ResponseWriter, r *http.Request) {
                 // Add the database connection to the request context

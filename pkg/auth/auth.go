@@ -3,12 +3,21 @@ package auth
 import (
  "time"
  "fmt"
+ "crypto/rand"
 
  "github.com/golang-jwt/jwt"
 )
 
-// Secret key for signing JWTs (keep this secret!)
-var jwtKey = []byte("your_secret_key") // Replace with a strong, randomly generated key
+// Generate a random key for signing JWTs
+func generateRandomKey() ([]byte, error) {
+ key := make([]byte, 32) // 256-bit key
+ if _, err := rand.Read(key); err != nil {
+    return nil, err
+ }
+ return key, nil
+}
+
+var jwtKey, _ = generateRandomKey() // Generate a strong, randomly generated key
 
 // Claims struct to define the claims in the JWT
 type Claims struct {
