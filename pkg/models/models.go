@@ -4,42 +4,62 @@ import "time"
 
 // Resource represents a computing resource offered by a Supplier.
 type Resource struct {
-    ID          string    `json:"id"`
-    SupplierID  string    `json:"supplierId"`
-    CPUCores    int       `json:"cpuCores"`
-    Memory      int       `json:"memory"` // in GB
-    Storage     int       `json:"storage"` // in GB
-    GPU         string    `json:"gpu"`    // e.g., "NVIDIA GeForce RTX 3080"
-    Bandwidth   int       `json:"bandwidth"` // in Mbps
-    CostPerHour float64   `json:"costPerHour"`
-    CreatedAt   time.Time `json:"createdAt"`
+	CPUCores    int     `json:"cpuCores"`
+	Memory      int     `json:"memory"`    // in GB
+	Storage     int     `json:"storage"`   // in GB
+	GPU         string  `json:"gpu"`       // e.g., "NVIDIA GeForce RTX 3080"
+	Bandwidth   int     `json:"bandwidth"` // in Mbps
+	CostPerHour float64 `json:"costPerHour"`
+	Available   bool    `json:"available"`
+}
+
+// ResourceWithID represents a computing resource with an ID.
+type ResourceWithID struct {
+	RID string `json:"rid"`
+	Resource
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ResourceWithUID represents a computing resource with a UID.
+type ResourceWithUID struct {
+	UID string `json:"uid"`
+	ResourceWithID
 }
 
 // Bid represents a bid made by a User for a Resource.
 type Bid struct {
-    ID         string    `json:"id"`
-    UserID     string    `json:"userId"`
-    ResourceID string    `json:"resourceId"`
-    Amount     float64   `json:"amount"` // Bid amount per hour
-    Duration   int       `json:"duration"` // in hours
-    Status     string    `json:"status"` // e.g., "pending", "accepted", "rejected"
-    CreatedAt  time.Time `json:"createdAt"`
+	RID      string  `json:"rid"`
+	Amount   float64 `json:"amount"`   // Bid amount per hour
+	Duration int     `json:"duration"` // in hours
+	Status   string  `json:"status"`   // e.g., "pending", "accepted", "rejected"
 }
 
-// User represents a user who can bid for resources.
-type User struct {
-    ID        string    `json:"id"`
-    Username  string    `json:"username"`
-    Email     string    `json:"email"`
-    Password  string    `json:"password"`
-    CreatedAt time.Time `json:"createdAt"`
+// BidWithID represents a bid with an ID.
+type BidWithID struct {
+	BID string `json:"bid"`
+	Bid
+	CreatedAt time.Time `json:"createdAt"`
 }
 
-// Supplier represents a supplier who can offer resources.
-type Supplier struct {
-    ID        string    `json:"id"`
-    CompanyName string    `json:"companyName"`
-    Email     string    `json:"email"`
-    Password  string    `json:"password"`
-    CreatedAt time.Time `json:"createdAt"`
+type BidWithUID struct {
+	UID string `json:"uid"`
+	BidWithID
+}
+
+// Credintials represents a user credintials.
+type Credintials struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type CredintialsWithID struct {
+	UID string `json:"uid"`
+	Credintials
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Token represents a JWT token.
+type Tokens struct {
+	UID   string `json:"uid"`
+	Token string `json:"token"`
 }

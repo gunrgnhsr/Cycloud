@@ -4,6 +4,8 @@ import (
  "time"
  "fmt"
  "crypto/rand"
+ "crypto/sha256"
+ "encoding/hex"
 
  "github.com/golang-jwt/jwt"
 )
@@ -21,9 +23,16 @@ var jwtKey, _ = generateRandomKey() // Generate a strong, randomly generated key
 
 // Claims struct to define the claims in the JWT
 type Claims struct {
- Username string `json:"username"`
- Role     string `json:"role"` // e.g., "supplier" or "user"
- jwt.StandardClaims
+    Username string `json:"username"`
+    Role     string `json:"role"` // e.g., "supplier" or "user"
+    jwt.StandardClaims
+}
+
+// HashString generates a SHA-256 hash of the input string
+func HashString(input string) string {
+    hash := sha256.New()
+    hash.Write([]byte(input))
+    return hex.EncodeToString(hash.Sum(nil))
 }
 
 // GenerateJWT generates a new JWT token for the given user
