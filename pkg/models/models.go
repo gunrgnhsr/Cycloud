@@ -31,13 +31,13 @@ type Bid struct {
 	RID      string  `json:"rid"`
 	Amount   float64 `json:"amount"`   // Bid amount per hour
 	Duration int     `json:"duration"` // in hours
-	Status   string  `json:"status"`   // e.g., "pending", "accepted", "rejected"
 }
 
 // BidWithID represents a bid with an ID.
 type BidWithID struct {
 	BID string `json:"bid"`
 	Bid
+	Status   string  `json:"status"`   // e.g., "pending", "accepted", "rejected"
 	CreatedAt time.Time `json:"createdAt"`
 }
 

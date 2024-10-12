@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
@@ -27,7 +26,7 @@ func handleCORS(w http.ResponseWriter, r *http.Request, headers string, methods 
 	// Set CORS headers in the response
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", methods)
-	w.Header().Set("Access-Control-Allow-Headers", headers + ", OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", headers+", OPTIONS")
 
 	// Handle preflight requests
 	if r.Method == http.MethodOptions {
@@ -38,8 +37,8 @@ func handleCORS(w http.ResponseWriter, r *http.Request, headers string, methods 
 	return false
 }
 
-// CheckAuthorization checks if the request is authorized by validating the JWT token
-func CheckAuthorization(w http.ResponseWriter, r *http.Request) (string, error) {
+// checkAuthorization checks if the request is authorized by validating the JWT token
+func checkAuthorization(r *http.Request) (string, error) {
 	// Get the token from the Authorization header
 	tokenString := r.Header.Get("Authorization")
 	if tokenString == "" {
@@ -71,12 +70,12 @@ func CheckAuthorization(w http.ResponseWriter, r *http.Request) (string, error) 
 	return uid, nil
 }
 
-func CheckThatResourceBelongsToUser(w http.ResponseWriter, r *http.Request, uid string, rid string) error {
+func checkThatResourceBelongsToUser(r *http.Request, uid string, rid string) error {
 	// Get the database connection from the request context
 	db := getDB(r)
 
 	// Check if the resource belongs to the user
-	ownerUID, err := pkg.GetResourcesOwner(db, rid)
+	ownerUID, err := pkg.GetResourceOwner(db, rid)
 	if err != nil {
 		return err
 	}
@@ -88,9 +87,43 @@ func CheckThatResourceBelongsToUser(w http.ResponseWriter, r *http.Request, uid 
 	return nil
 }
 
+func checkThatBidBelongsToUser(r *http.Request, uid string, bidId string) error {
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Check if the bid belongs to the user
+	ownerUID, err := pkg.GetBidOwner(db, bidId)
+	if err != nil {
+		return err
+	}
+
+	if ownerUID != uid {
+		return errors.New("bid does not belong to user")
+	}
+
+	return nil
+}
+
+func checkThatTheresABidForTheResourceByUser(r *http.Request, rid string, uid string) error {
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Check if the bid belongs to the user
+	thereIsBidForResource, err := pkg.CheckOwnerHaveBidForResource(db, uid, rid)
+	if err != nil {
+		return err
+	}
+
+	if !thereIsBidForResource {
+		return errors.New("there is no bid for the resource by the user")
+	}
+
+	return nil
+}
+
 // Login handles user login and generates a JWT
 func Login(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type","POST") {
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
 		return
 	}
 
@@ -113,7 +146,7 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	hashedUsername := auth.HashString(credentials.Username)
 
 	hashedPassword := auth.HashString(credentials.Password)
-		
+
 	// Query the database to check if the user exists and the password matches
 	uid, err := pkg.GetUserOrRegisterIfNotExist(db, hashedUsername, hashedPassword)
 	if err != nil {
@@ -123,10 +156,10 @@ func Login(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 		} else if err.Error() == "failed to register user" {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-		} 
+		}
 		if err.Error() == "user registered" {
 			// w.WriteHeader(http.StatusCreated)
-		}else{ 
+		} else {
 			return
 		}
 	}
@@ -157,11 +190,15 @@ func Login(w http.ResponseWriter, r *http.Request) {
 
 // Logout handles user logout by invalidating the JWT token
 func Logout(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization","DELETE") {
+	if handleCORS(w, r, "Authorization", "DELETE") {
 		return
 	}
 
-	uid, err := CheckAuthorization(w, r)
+	var (
+		err error
+		uid string
+	)
+	uid, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -188,12 +225,16 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 
 // CreateResource handles the creation of a new resource.
 func CreateResource(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type", "POST"){
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
 		return
 	}
 
 	// Check if the request is authorized
-	uid, err := CheckAuthorization(w, r)
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -223,12 +264,16 @@ func CreateResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type", "PUT"){
+	if handleCORS(w, r, "Authorization, content-type", "PUT") {
 		return
 	}
 
 	// Check if the request is authorized
-	uid, err := CheckAuthorization(w, r)
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -237,11 +282,11 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 	// Parse the request body to get the resource details
 	rid := mux.Vars(r)["rid"]
 	if rid == "" {
-        http.Error(w, "Missing resource ID", http.StatusBadRequest)
-        return
-    }
+		http.Error(w, "Missing resource ID", http.StatusBadRequest)
+		return
+	}
 
-	err = CheckThatResourceBelongsToUser(w, r, uid, rid)
+	err = checkThatResourceBelongsToUser(r, uid, rid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -251,10 +296,18 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 	db := getDB(r)
 
 	// Update the resource availability in the database
-	err = pkg.UpdateResourceAvailability(db, rid)
+	available, err := pkg.UpdateResourceAvailability(db, rid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	if !available {
+		err = pkg.RemoveBidsForResource(db, rid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return a success response
@@ -264,12 +317,16 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 
 // DeleteResource handles the deletion of a resource by ID.
 func DeleteResource(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type", "DELETE"){
+	if handleCORS(w, r, "Authorization, content-type", "DELETE") {
 		return
 	}
 
 	// Check if the request is authorized
-	uid, err := CheckAuthorization(w, r)
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -278,11 +335,11 @@ func DeleteResource(w http.ResponseWriter, r *http.Request) {
 	// Parse the request body to get the resource details
 	rid := mux.Vars(r)["rid"]
 	if rid == "" {
-        http.Error(w, "Missing resource ID", http.StatusBadRequest)
-        return
-    }
+		http.Error(w, "Missing resource ID", http.StatusBadRequest)
+		return
+	}
 
-	err = CheckThatResourceBelongsToUser(w, r, uid, rid)
+	err = checkThatResourceBelongsToUser(r, uid, rid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -290,6 +347,17 @@ func DeleteResource(w http.ResponseWriter, r *http.Request) {
 
 	// Get the database connection from the request context
 	db := getDB(r)
+
+	available, err := pkg.CheckResourceAvailability(db, rid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if available {
+		http.Error(w, "Resource is still available, please make it unavailable before removing", http.StatusPreconditionFailed)
+		return
+	}
 
 	// Delete the resource from the database
 	err = pkg.DeleteResource(db, rid)
@@ -305,12 +373,16 @@ func DeleteResource(w http.ResponseWriter, r *http.Request) {
 
 // GetResource handles the retrieval of a resource by ID.
 func GetUserResource(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization", "GET"){
+	if handleCORS(w, r, "Authorization", "GET") {
 		return
 	}
 
 	// Check if the request is authorized
-	uid, err := CheckAuthorization(w, r)
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -338,70 +410,71 @@ func GetUserResource(w http.ResponseWriter, r *http.Request) {
 
 // GetResources handles the retrieval of all resources.
 func GetResources(w http.ResponseWriter, r *http.Request) {
-        if handleCORS(w, r, "Authorization", "GET"){
-				return
-		}
-
-        // Check if the request is authorized
-        _, err := CheckAuthorization(w, r)
-        if err != nil {
-                http.Error(w, err.Error(), http.StatusUnauthorized)
-                return
-        }
-
-        // Get the database connection from the request context
-        db := getDB(r)
-
-        // Check if the request has a resource ID and a prev or next flag
-        resourceID := r.URL.Query().Get("rid")
-        direction := r.URL.Query().Get("direction")
-
-        var resources []models.ResourceWithID
-        var isPrev bool
-        if direction == "prev" {
-                isPrev = true
-        } else if direction == "next" {
-                isPrev = false
-        } else {
-                http.Error(w, "Invalid direction", http.StatusBadRequest)
-                return
-        }
-        if resourceID == "" {
-                http.Error(w, "Missing resource ID", http.StatusBadRequest)
-                return
-        }
-        
-        resources, err = pkg.GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db, resourceID, isPrev)
-        if err != nil {
-                http.Error(w, err.Error(), http.StatusInternalServerError)
-                return
-        }
-
-        // Return the resources data
-        json.NewEncoder(w).Encode(resources)
-}
-
-// PlaceBid handles the placement of a bid on a resource.
-func PlaceBid(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization", "POST"){
+	if handleCORS(w, r, "Authorization", "GET") {
 		return
 	}
 
-        // Check if the request is authorized
-	uid, err := CheckAuthorization(w, r)
+	// Check if the request is authorized
+	var err error
+	_, err = checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-        
-        // Parse the request body to get the bid details
-	var bid models.Bid
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Parse the request body to get the resource details
+	rid := mux.Vars(r)["rid"]
+	if rid == "" {
+		http.Error(w, "Missing resource ID", http.StatusBadRequest)
 		return
 	}
-	err = json.Unmarshal(body, &bid)
+
+	direction := mux.Vars(r)["direction"]
+	if rid == "" {
+		http.Error(w, "Missing direction", http.StatusBadRequest)
+		return
+	}
+
+	var resources []models.ResourceWithID
+	var isPrev bool
+	if direction == "prev" {
+		isPrev = true
+	} else if direction == "next" {
+		isPrev = false
+	} else {
+		http.Error(w, "Invalid direction", http.StatusBadRequest)
+		return
+	}
+
+	resources, err = pkg.GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db, rid, isPrev)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the resources data
+	json.NewEncoder(w).Encode(resources)
+}
+
+// PlaceBid handles the placement of a bid on a resource.
+func PlaceBid(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the bid details
+	var bid models.Bid
+	err = json.NewDecoder(r.Body).Decode(&bid)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -410,11 +483,8 @@ func PlaceBid(w http.ResponseWriter, r *http.Request) {
 	// Get the database connection from the request context
 	db := getDB(r)
 
-	// Set the initial status of the bid
-	bid.Status = "pending"
-
 	// Insert the bid into the database
-	bidId, err := pkg.InsertNewBid(db, uid, bid);
+	bidId, err := pkg.InsertNewBid(db, uid, bid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -423,4 +493,115 @@ func PlaceBid(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Bid placed successfully", "bid_id": bidId})
+}
+
+// GetUserBids handles the retrieval of all bids.
+func GetUserBids(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "GET") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Fetch the bids from the database
+	bids, err := pkg.GetUserBids(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the bids data
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(bids)
+}
+
+// RemoveUserBid handles the removal of a bid by ID.
+func RemoveUserBid(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "DELETE") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the bid details
+	bidId := mux.Vars(r)["bidId"]
+	if bidId == "" {
+		http.Error(w, "Missing bid ID", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the bid belongs to the user
+	err = checkThatBidBelongsToUser(r, uid, bidId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Remove the bid from the database
+	err = pkg.RemoveBid(db, bidId)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Bid removed successfully"})
+}
+
+// GetLoanRequestResourceSpec handles the retrieval of a resource by ID.
+func GetLoanRequestResourceSpec(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "GET") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the resource details
+	rid := mux.Vars(r)["rid"]
+	if rid == "" {
+		http.Error(w, "Missing resource ID", http.StatusBadRequest)
+		return
+	}
+
+	err = checkThatTheresABidForTheResourceByUser(r, rid, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Fetch the resource from the database
+	resource, err := pkg.GetResourceByID(db, rid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the resource data
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resource)
 }

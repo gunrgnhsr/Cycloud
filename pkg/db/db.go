@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/gunrgnhsr/Cycloud/pkg/models"
+	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-        "github.com/joho/godotenv"
 )
 
 // DBConfig holds the database configuration parameters.
@@ -29,24 +29,23 @@ func GetDBContextKey() contextKey {
 }
 
 func getDBSchemaTable(table string) string {
-	return os.Getenv("DB_SCHEMA")+"."+table
+	return os.Getenv("DB_SCHEMA") + "." + table
 }
 
 func setTables(db *sql.DB, dbSchema string) error {
 	// Create the schema if it doesn't exist
-        _, err := db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s",dbSchema))
-        if err != nil {
-                return err
-        }
-        
-        
-        tables := []struct {
+	_, err := db.Exec(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", dbSchema))
+	if err != nil {
+		return err
+	}
+
+	tables := []struct {
 		name   string
 		schema string
 	}{
 		{
 			name: "users",
-			schema: `CREATE TABLE `+dbSchema+`.users (
+			schema: `CREATE TABLE ` + dbSchema + `.users (
                                 uid SERIAL PRIMARY KEY,
                                 username TEXT NOT NULL UNIQUE,
                                 password TEXT NOT NULL,
@@ -55,16 +54,16 @@ func setTables(db *sql.DB, dbSchema string) error {
 		},
 		{
 			name: "tokens",
-			schema: `CREATE TABLE `+dbSchema+`.tokens (
+			schema: `CREATE TABLE ` + dbSchema + `.tokens (
                                 uid INTEGER NOT NULL,
                                 token TEXT NOT NULL,
                                 PRIMARY KEY (uid, token),
-                                FOREIGN KEY (uid) REFERENCES `+dbSchema+`.users(uid)
+                                FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid)
                         )`,
 		},
 		{
 			name: "resources",
-			schema: `CREATE TABLE `+dbSchema+`.resources (
+			schema: `CREATE TABLE ` + dbSchema + `.resources (
                                 rid SERIAL PRIMARY KEY,
                                 uid INTEGER NOT NULL,
                                 cpu_cores INTEGER NOT NULL,
@@ -75,21 +74,21 @@ func setTables(db *sql.DB, dbSchema string) error {
                                 cost_per_hour NUMERIC NOT NULL,
                                 available BOOLEAN NOT NULL,
                                 createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                                FOREIGN KEY (uid) REFERENCES `+dbSchema+`.users(uid)
+                                FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid)
                         )`,
 		},
 		{
 			name: "bids",
-			schema: `CREATE TABLE `+dbSchema+`.bids (
+			schema: `CREATE TABLE ` + dbSchema + `.bids (
                                 bid SERIAL PRIMARY KEY,
                                 uid INTEGER NOT NULL,
                                 rid INTEGER NOT NULL,
                                 amount NUMERIC NOT NULL,
                                 duration INTEGER NOT NULL,
-                                status TEXT NOT NULL,
+                                status TEXT DEFAULT 'pending',
                                 createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                                FOREIGN KEY (uid) REFERENCES `+dbSchema+`.users(uid),
-                                FOREIGN KEY (rid) REFERENCES `+dbSchema+`.resources(rid)
+                                FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid),
+                                FOREIGN KEY (rid) REFERENCES ` + dbSchema + `.resources(rid)
                         )`,
 		},
 	}
@@ -111,7 +110,7 @@ func setTables(db *sql.DB, dbSchema string) error {
 
 			// If the column count doesn't match, drop and recreate the table
 			if columnCount != len(table.schema) {
-				_, err = db.Exec(fmt.Sprintf("DROP TABLE %s.%s CASCADE",dbSchema, table.name))
+				_, err = db.Exec(fmt.Sprintf("DROP TABLE %s.%s CASCADE", dbSchema, table.name))
 				if err != nil {
 					return err
 				}
@@ -142,7 +141,7 @@ func NewDB() (*sql.DB, error) {
 	// Load environment variables from .env
 	err := godotenv.Load()
 	if err != nil {
-			return nil, err
+		return nil, err
 	}
 
 	// Get database configuration from environment variables
@@ -152,11 +151,11 @@ func NewDB() (*sql.DB, error) {
 		User:     os.Getenv("DB_USER"),
 		Password: os.Getenv("DB_PASS"),
 		DBName:   os.Getenv("DB_NAME"),
-		Schema: os.Getenv("DB_SCHEMA"),
+		Schema:   os.Getenv("DB_SCHEMA"),
 	}
 
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-                dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.DBName)
+		dbConfig.Host, dbConfig.Port, dbConfig.User, dbConfig.Password, dbConfig.DBName)
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -252,13 +251,24 @@ func InsertNewResourse(db *sql.DB, resource models.Resource, uid string) error {
 	return nil
 }
 
-func UpdateResourceAvailability(db *sql.DB, rid string) error {
+func UpdateResourceAvailability(db *sql.DB, rid string) (bool, error) {
+	var available bool
 	table := getDBSchemaTable("resources")
-	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET available = NOT available WHERE rid = $1", table), rid)
+	err := db.QueryRow(fmt.Sprintf("UPDATE %s SET available = NOT available WHERE rid = $1 RETURNING available", table), rid).Scan(&available)
 	if err != nil {
-		return errors.New("failed to update resource availability")
+		return false, errors.New("failed to update and retrieve resource availability")
 	}
-	return nil
+	return available, nil
+}
+
+func CheckResourceAvailability(db *sql.DB, rid string) (bool, error) {
+	var available bool
+	table := getDBSchemaTable("resources")
+	err := db.QueryRow(fmt.Sprintf("SELECT available FROM %s WHERE rid = $1", table), rid).Scan(&available)
+	if err != nil {
+		return false, errors.New("failed to check resource availability")
+	}
+	return available, nil
 }
 
 func DeleteResource(db *sql.DB, rid string) error {
@@ -270,10 +280,11 @@ func DeleteResource(db *sql.DB, rid string) error {
 	return nil
 }
 
-func GetResourceByID(db *sql.DB, id string) (models.ResourceWithID, error) {
+func GetResourceByID(db *sql.DB, rid string) (models.ResourceWithID, error) {
 	var resource models.ResourceWithID
 	table := getDBSchemaTable("resources")
-	err := db.QueryRow(fmt.Sprintf("SELECT rid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour, available, createdAt FROM %s WHERE rid = $1", table), id).Scan(&resource)
+	err := db.QueryRow(fmt.Sprintf("SELECT rid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour, available, createdAt FROM %s WHERE rid = $1", table), rid).Scan(
+		&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return models.ResourceWithID{}, errors.New("resource not found")
@@ -295,7 +306,7 @@ func GetUserResources(db *sql.DB, uid string) ([]models.ResourceWithID, error) {
 	resources := []models.ResourceWithID{}
 	for rows.Next() {
 		var resource models.ResourceWithID
-		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt); 
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
 		if err != nil {
 			return nil, errors.New("failed to fetch resources")
 		}
@@ -305,7 +316,7 @@ func GetUserResources(db *sql.DB, uid string) ([]models.ResourceWithID, error) {
 	return resources, nil
 }
 
-func GetResourcesOwner(db *sql.DB, rid string) (string, error) {
+func GetResourceOwner(db *sql.DB, rid string) (string, error) {
 	var uid string
 	table := getDBSchemaTable("resources")
 	err := db.QueryRow(fmt.Sprintf("SELECT uid FROM %s WHERE rid = $1", table), rid).Scan(&uid)
@@ -336,7 +347,7 @@ func GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db *sql.DB, rid string, i
 	resources := []models.ResourceWithID{}
 	for rows.Next() {
 		var resource models.ResourceWithID
-		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt); 
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
 		if err != nil {
 			return nil, errors.New("failed to fetch resources")
 		}
@@ -349,22 +360,22 @@ func GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db *sql.DB, rid string, i
 func InsertNewBid(db *sql.DB, uid string, bid models.Bid) (string, error) {
 	var id string
 	table := getDBSchemaTable("bids")
-	err := db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, rid, amount, duration, status) VALUES ($1, $2, $3, $4, $5) RETURNING bid", table),
-		uid, bid.RID, bid.Amount, bid.Duration, bid.Status).Scan(&id)
+	err := db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, rid, amount, duration) VALUES ($1, $2, $3, $4) RETURNING bid", table),
+		uid, bid.RID, bid.Amount, bid.Duration).Scan(&id)
 	if err != nil {
 		return "", errors.New("failed to place bid")
 	}
 	return id, nil
 }
 
-func GetBidByID(db *sql.DB, id string) (models.BidWithID, error) {
-	var bid models.BidWithID
+func GetBidOwner(db *sql.DB, bidId string) (string, error) {
+	var uid string
 	table := getDBSchemaTable("bids")
-	err := db.QueryRow(fmt.Sprintf("SELECT bid, uid, rid, amount, duration, status, createdAt FROM %s WHERE bid = $1", table), id).Scan(&bid)
+	err := db.QueryRow(fmt.Sprintf("SELECT uid FROM %s WHERE bid = $1", table), bidId).Scan(&uid)
 	if err != nil {
-		return models.BidWithID{}, err
+		return "", err
 	}
-	return bid, nil
+	return uid, nil
 }
 
 func RemoveBid(db *sql.DB, id string) error {
@@ -387,7 +398,7 @@ func GetUserBids(db *sql.DB, uid string) ([]models.BidWithID, error) {
 	bids := []models.BidWithID{}
 	for rows.Next() {
 		var bid models.BidWithID
-		err := rows.Scan(&bid.BID, &bid.Bid.RID, &bid.Bid.Amount, &bid.Bid.Duration, &bid.Bid.Status, &bid.CreatedAt); 
+		err := rows.Scan(&bid.BID, &bid.Bid.RID, &bid.Bid.Amount, &bid.Bid.Duration, &bid.Status, &bid.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -408,7 +419,7 @@ func GetBidsForResource(db *sql.DB, rid string) ([]models.BidWithID, error) {
 	bids := []models.BidWithID{}
 	for rows.Next() {
 		var bid models.BidWithID
-		err := rows.Scan(&bid.BID, &bid.Bid.RID, &bid.Bid.Amount, &bid.Bid.Duration, &bid.Bid.Status, &bid.CreatedAt); 
+		err := rows.Scan(&bid.BID, &bid.Bid.RID, &bid.Bid.Amount, &bid.Bid.Duration, &bid.Status, &bid.CreatedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -416,4 +427,26 @@ func GetBidsForResource(db *sql.DB, rid string) ([]models.BidWithID, error) {
 	}
 
 	return bids, nil
+}
+
+func RemoveBidsForResource(db *sql.DB, rid string) error {
+	table := getDBSchemaTable("bids")
+	_, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rid = $1", table), rid)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func CheckOwnerHaveBidForResource(db *sql.DB, uid string, rid string) (bool, error) {
+	var count int
+	table := getDBSchemaTable("bids")
+	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE uid = $1 AND rid = $2", table), uid, rid).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	if count == 0 {
+		return false, nil
+	}
+	return true, nil
 }
