@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"context"
         "fmt"
         "log"
@@ -10,11 +11,22 @@ import (
         "syscall"
         "time"
 
+        "github.com/gorilla/mux"
 	"github.com/gunrgnhsr/Cycloud/pkg/db"
         "github.com/gunrgnhsr/Cycloud/pkg/handlers"
 )
 
-const dbContextKey = "db"
+func addDBToContext(db *sql.DB, r *http.Request) *http.Request {
+        return r.WithContext(context.WithValue(r.Context(), pkg.GetDBContextKey(), db))
+}
+
+// Logging middleware
+func loggingMiddleware(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                log.Printf("Received request: %s %s", r.Method, r.RequestURI)
+                next.ServeHTTP(w, r)
+        })
+}
 
 func main() {
         
@@ -23,43 +35,45 @@ func main() {
                 panic(err)
         }
 
+        muxRouter := mux.NewRouter()
+
+        // Apply logging middleware
+        muxRouter.Use(loggingMiddleware)
+
         // Set up routes and middleware        
-        http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
-                r = r.WithContext(context.WithValue(r.Context(), dbContextKey, db))
-                handlers.Login(w, r)
+        muxRouter.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+                handlers.Login(w, addDBToContext(db, r))
         })
 
-        http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
-                r = r.WithContext(context.WithValue(r.Context(), dbContextKey, db))
-                handlers.Logout(w, r)
+        muxRouter.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
+                handlers.Logout(w, addDBToContext(db, r))
         })
-        
-        http.HandleFunc("/resources", func(w http.ResponseWriter, r *http.Request) {
-                // Add the database connection to the request context
-                r = r.WithContext(context.WithValue(r.Context(), dbContextKey, db))
 
-                // Call the appropriate handler based on the request method
-                if r.Method == http.MethodPost {
-                        handlers.CreateResource(w, r)
-                } else if r.Method == http.MethodGet {
-                        handlers.GetUserResource(w, r)
-                } // ... handle other methods
-        });
+        muxRouter.HandleFunc("/get-user-resources", func(w http.ResponseWriter, r *http.Request) {
+                handlers.GetUserResource(w, addDBToContext(db, r))
+        })
 
-        http.HandleFunc("/available-resources", func(w http.ResponseWriter, r *http.Request) {
-                // Add the database connection to the request context
-                r = r.WithContext(context.WithValue(r.Context(), dbContextKey, db))
+        muxRouter.HandleFunc("/add-user-resources", func(w http.ResponseWriter, r *http.Request) {
+                handlers.CreateResource(w, addDBToContext(db, r))
+        })
 
-                // Call the appropriate handler based on the request method
-                if r.Method == http.MethodGet {
-                        handlers.GetResources(w, r)
-                }
-        });
+        muxRouter.HandleFunc("/delete-user-resource/{rid}", func(w http.ResponseWriter, r *http.Request) {
+                handlers.DeleteResource(w, addDBToContext(db, r))
+        })
 
+        muxRouter.HandleFunc("/update-resource-availability/{rid}", func(w http.ResponseWriter, r *http.Request) {
+                handlers.UpdateResourceAvailability(w, addDBToContext(db, r))
+        })
 
+        muxRouter.HandleFunc("/available-resources", func(w http.ResponseWriter, r *http.Request) {
+                handlers.GetResources(w, addDBToContext(db, r))
+        })
 
         // Create a server instance
-        server := &http.Server{Addr: ":8080", Handler: nil}
+        server := &http.Server{
+                Addr: ":8080", 
+                Handler: muxRouter,
+        }
 
         // Graceful shutdown
         go func() {

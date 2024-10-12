@@ -37,6 +37,8 @@ func HashString(input string) string {
 
 // GenerateJWT generates a new JWT token for the given user
 func GenerateJWT(username, role string) (string, error) {
+    
+    
     expirationTime := time.Now().Add(1 * time.Hour) // Token expires in 1 hour
     claims := &Claims{
     Username: username,
