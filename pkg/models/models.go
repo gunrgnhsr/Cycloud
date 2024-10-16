@@ -11,6 +11,7 @@ type Resource struct {
 	Bandwidth   int     `json:"bandwidth"` // in Mbps
 	CostPerHour float64 `json:"costPerHour"`
 	Available   bool    `json:"available"`
+	Computing  bool    `json:"computing"`
 }
 
 // ResourceWithID represents a computing resource with an ID.
@@ -38,6 +39,7 @@ type BidWithID struct {
 	BID string `json:"bid"`
 	Bid
 	Status   string  `json:"status"`   // e.g., "pending", "accepted", "rejected"
+	Computing bool    `json:"computing"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -62,4 +64,9 @@ type CredintialsWithID struct {
 type Tokens struct {
 	UID   string `json:"uid"`
 	Token string `json:"token"`
+}
+
+type UserWallet struct {
+	UID    string  `json:"uid"`
+	Amount float64 `json:"amount"`
 }

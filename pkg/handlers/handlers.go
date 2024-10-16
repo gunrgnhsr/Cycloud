@@ -605,3 +605,103 @@ func GetLoanRequestResourceSpec(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resource)
 }
+
+// GetUserInfo handles the retrieval of a user's credits.
+func GetUserInfo(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "GET") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Fetch the user's credits from the database
+	credits, err := pkg.GetUserCredits(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// fetch the user's number of resources
+	resources, err := pkg.GetNumberOfResources(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch the user's number of activly running resources
+	activeResources, err := pkg.GetNumberOfActiveResources(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// fetch the user's number of pendingBids and total amount of pendingBids
+	pendingBids, err := pkg.GetUserOpenBidsTotalAmount(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// fetch the user's number of avtive used resources
+	activeLoans, err := pkg.GetNumberOfAcceptedBidsCurrentlyRunning(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the credits data
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"credits":          credits,
+		"resources":        resources,
+		"activeResources": activeResources,
+		"pendingBids":    pendingBids,
+		"activeLoans":    activeLoans,
+	})
+}
+
+// AddCredits handles the addition of credits to a user's account.
+func AddCredits(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the credits details
+	var credits struct {
+		Amount float64 `json:"amount"`
+	}
+
+	err = json.NewDecoder(r.Body).Decode(&credits)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Add the credits to the user's account
+	_ ,err = pkg.UpdateUserCredits(db, uid, credits.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Return a success response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Credits added successfully"})
+}

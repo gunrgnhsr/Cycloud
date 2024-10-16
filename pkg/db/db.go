@@ -53,6 +53,13 @@ func setTables(db *sql.DB, dbSchema string) error {
                         )`,
 		},
 		{
+			name: "wallets",
+			schema: `CREATE TABLE ` + dbSchema + `.wallets (
+                                uid SERIAL PRIMARY KEY,
+                                credits NUMERIC NOT NULL DEFAULT 0
+                        )`,
+		},
+		{
 			name: "tokens",
 			schema: `CREATE TABLE ` + dbSchema + `.tokens (
                                 uid INTEGER NOT NULL,
@@ -72,7 +79,8 @@ func setTables(db *sql.DB, dbSchema string) error {
                                 gpu TEXT NOT NULL,
                                 bandwidth INTEGER NOT NULL,
                                 cost_per_hour NUMERIC NOT NULL,
-                                available BOOLEAN NOT NULL,
+                                available BOOLEAN DEFAULT true,
+								computing BOOLEAN DEFAULT false,
                                 createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                                 FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid)
                         )`,
@@ -86,6 +94,7 @@ func setTables(db *sql.DB, dbSchema string) error {
                                 amount NUMERIC NOT NULL,
                                 duration INTEGER NOT NULL,
                                 status TEXT DEFAULT 'pending',
+								computing BOOLEAN DEFAULT false,
                                 createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                                 FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid),
                                 FOREIGN KEY (rid) REFERENCES ` + dbSchema + `.resources(rid)
@@ -191,6 +200,12 @@ func GetUserOrRegisterIfNotExist(db *sql.DB, username, password string) (string,
 			if err != nil {
 				return "", errors.New("failed to register user")
 			} else {
+				// Create a wallet for the new user
+				walletTable := getDBSchemaTable("wallets")
+				_, err = db.Exec(fmt.Sprintf("INSERT INTO %s (uid) VALUES ($1)", walletTable), uid)
+				if err != nil {
+					return "", errors.New("failed to create wallet for user")
+				}
 				return uid, errors.New("user registered")
 			}
 		} else {
@@ -243,8 +258,8 @@ func RemoveExpiredToken(db *sql.DB, uid string) error {
 func InsertNewResourse(db *sql.DB, resource models.Resource, uid string) error {
 	var rid string
 	table := getDBSchemaTable("resources")
-	err := db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour, available) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING rid", table),
-		uid, resource.CPUCores, resource.Memory, resource.Storage, resource.GPU, resource.Bandwidth, resource.CostPerHour, resource.Available).Scan(&rid)
+	err := db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING rid", table),
+		uid, resource.CPUCores, resource.Memory, resource.Storage, resource.GPU, resource.Bandwidth, resource.CostPerHour).Scan(&rid)
 	if err != nil {
 		return errors.New("failed to insert new resource")
 	}
@@ -449,4 +464,65 @@ func CheckOwnerHaveBidForResource(db *sql.DB, uid string, rid string) (bool, err
 		return false, nil
 	}
 	return true, nil
+}
+
+func GetUserCredits(db *sql.DB, uid string) (float64, error) {
+	var amount float64
+	table := getDBSchemaTable("wallets")
+	err := db.QueryRow(fmt.Sprintf("SELECT credits FROM %s WHERE uid = $1", table), uid).Scan(&amount)
+	if err != nil {
+		return 0, err
+	}
+	return amount, nil
+}
+
+func UpdateUserCredits(db *sql.DB, uid string, amount float64) (float64, error) {
+	var updatedAmount float64
+	table := getDBSchemaTable("wallets")
+	err := db.QueryRow(fmt.Sprintf("UPDATE %s SET credits = credits + $1 WHERE uid = $2 RETURNING credits", table), amount, uid).Scan(&updatedAmount)
+	if err != nil {
+		return 0, err
+	}
+
+	return updatedAmount, nil
+}
+
+func GetNumberOfResources(db *sql.DB, uid string) (int, error) {
+	var count int
+	table := getDBSchemaTable("resources")
+	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE uid = $1", table), uid).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func GetNumberOfActiveResources(db *sql.DB, uid string) (int, error) {
+	var count int
+	table := getDBSchemaTable("resources")
+	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE uid = $1 AND computing = true", table), uid).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func GetUserOpenBidsTotalAmount(db *sql.DB, uid string) (float64, error) {
+	var total float64
+	table := getDBSchemaTable("bids")
+	err := db.QueryRow(fmt.Sprintf("SELECT COALESCE(SUM(amount), 0) FROM %s WHERE uid = $1 AND status = 'pending'", table), uid).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func GetNumberOfAcceptedBidsCurrentlyRunning(db *sql.DB, uid string) (int, error) {
+	var count int
+	table := getDBSchemaTable("bids")
+	err := db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE uid = $1 AND status = 'accepted' AND computing = true", table), uid).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }

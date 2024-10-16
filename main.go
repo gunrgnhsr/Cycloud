@@ -85,6 +85,14 @@ func main() {
 		handlers.RemoveUserBid(w, addDBToContext(db, r))
 	})
 
+        muxRouter.HandleFunc("/get-info", func(w http.ResponseWriter, r *http.Request) {
+                handlers.GetUserInfo(w, addDBToContext(db, r))
+        })
+
+        muxRouter.HandleFunc("/add-credits", func(w http.ResponseWriter, r *http.Request) {
+                handlers.AddCredits(w, addDBToContext(db, r))
+        })
+
 	// Create a server instance
 	server := &http.Server{
 		Addr:    ":8080",
