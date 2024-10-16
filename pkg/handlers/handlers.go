@@ -303,6 +303,8 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !available {
+		// TODO: check for current running bid and act accordingly
+
 		err = pkg.RemoveBidsForResource(db, rid)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -416,7 +418,7 @@ func GetResources(w http.ResponseWriter, r *http.Request) {
 
 	// Check if the request is authorized
 	var err error
-	_, err = checkAuthorization(r)
+	uid, err := checkAuthorization(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -449,7 +451,7 @@ func GetResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resources, err = pkg.GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db, rid, isPrev)
+	resources, err = pkg.GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db, uid, rid, isPrev)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -486,7 +488,11 @@ func PlaceBid(w http.ResponseWriter, r *http.Request) {
 	// Insert the bid into the database
 	bidId, err := pkg.InsertNewBid(db, uid, bid)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if bidId == "credit problem" {
+			http.Error(w, err.Error(), http.StatusPaymentRequired)
+		}else{
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -689,6 +695,11 @@ func AddCredits(w http.ResponseWriter, r *http.Request) {
 	err = json.NewDecoder(r.Body).Decode(&credits)
 	if err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if credits.Amount <= 0 {
+		http.Error(w, "Invalid credits amount", http.StatusBadRequest)
 		return
 	}
 
