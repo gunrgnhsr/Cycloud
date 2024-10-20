@@ -97,7 +97,7 @@ func main() {
 	// Create a server instance
 	serverCtx, serverStopCtx := context.WithCancel(context.Background())
 	server := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":3001",
 		Handler: muxRouter,
 	}
 
@@ -138,7 +138,7 @@ func main() {
         }()
 
 	// Start the server
-	fmt.Println("Server listening on port 8080")
+	fmt.Println("Server listening on port 3001")
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
