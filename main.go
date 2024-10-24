@@ -14,7 +14,6 @@ import (
 	"github.com/gorilla/mux"
 	pkg "github.com/gunrgnhsr/Cycloud/pkg/db"
 	"github.com/gunrgnhsr/Cycloud/pkg/handlers"
-	"github.com/gunrgnhsr/Cycloud/pkg/bidding"
 )
 
 func addDBToContext(db *sql.DB, r *http.Request) *http.Request {
@@ -86,16 +85,15 @@ func main() {
 		handlers.RemoveUserBid(w, addDBToContext(db, r))
 	})
 
-        muxRouter.HandleFunc("/get-info", func(w http.ResponseWriter, r *http.Request) {
-                handlers.GetUserInfo(w, addDBToContext(db, r))
-        })
+	muxRouter.HandleFunc("/get-info", func(w http.ResponseWriter, r *http.Request) {
+			handlers.GetUserInfo(w, addDBToContext(db, r))
+	})
 
-        muxRouter.HandleFunc("/add-credits", func(w http.ResponseWriter, r *http.Request) {
-                handlers.AddCredits(w, addDBToContext(db, r))
-        })
+	muxRouter.HandleFunc("/add-credits", func(w http.ResponseWriter, r *http.Request) {
+			handlers.AddCredits(w, addDBToContext(db, r))
+	})
 
 	// Create a server instance
-	serverCtx, serverStopCtx := context.WithCancel(context.Background())
 	server := &http.Server{
 		Addr:    ":3001",
 		Handler: muxRouter,
@@ -108,9 +106,6 @@ func main() {
 		<-stop
 		log.Println("Shutting down server...")
 
-		// Signal the server to stop
-		serverStopCtx()
-
 		// Create a deadline for the server to shutdown gracefully
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -119,23 +114,6 @@ func main() {
 			log.Fatalf("Server forced to shutdown: %v", err)
 		}
 	}()
-
-        // Bidding routine
-        go func() {
-                ticker := time.NewTicker(1 * time.Minute)
-                defer ticker.Stop()
-
-                for {
-                        select {
-                                case <-serverCtx.Done():
-                                        log.Println("Stopping bidding routine...")
-                                        return
-                                case <-ticker.C:
-                                        // Call the bidding routine
-                                        bidding.StartBidding(db)
-                        }
-                }
-        }()
 
 	// Start the server
 	fmt.Println("Server listening on port 3001")

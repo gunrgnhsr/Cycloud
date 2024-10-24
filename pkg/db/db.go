@@ -56,7 +56,7 @@ func setTables(db *sql.DB, dbSchema string) error {
 			name: "wallets",
 			schema: `CREATE TABLE ` + dbSchema + `.wallets (
 								uid SERIAL PRIMARY KEY,
-								credits NUMERIC NOT NULL DEFAULT 0 CHECK (credits >= 0)
+								credits NUMERIC NOT NULL DEFAULT 10 CHECK (credits >= 0)
 						)`,
 		},
 		{
@@ -79,7 +79,7 @@ func setTables(db *sql.DB, dbSchema string) error {
 								gpu TEXT NOT NULL,
 								bandwidth INTEGER NOT NULL,
 								cost_per_hour NUMERIC NOT NULL CHECK (cost_per_hour >= 0),
-								available BOOLEAN DEFAULT true,
+								available BOOLEAN DEFAULT false,
 								computing BOOLEAN DEFAULT false,
 								createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
 								FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid)
@@ -259,7 +259,7 @@ func InsertNewResourse(db *sql.DB, resource models.Resource, uid string) error {
 	var rid string
 	table := getDBSchemaTable("resources")
 	err := db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING rid", table),
-		uid, resource.CPUCores, resource.Memory, resource.Storage, resource.GPU, resource.Bandwidth, resource.CostPerHour).Scan(&rid)
+		uid, resource.CPUCores, resource.Memory, resource.Storage, resource.GPU, resource.Bandwidth, resource.CostPerMinute).Scan(&rid)
 	if err != nil {
 		return errors.New("failed to insert new resource")
 	}
@@ -269,9 +269,12 @@ func InsertNewResourse(db *sql.DB, resource models.Resource, uid string) error {
 func UpdateResourceAvailability(db *sql.DB, rid string) (bool, error) {
 	var available bool
 	table := getDBSchemaTable("resources")
-	err := db.QueryRow(fmt.Sprintf("UPDATE %s SET available = NOT available WHERE rid = $1 RETURNING available", table), rid).Scan(&available)
+	err := db.QueryRow(fmt.Sprintf("UPDATE %s SET available = NOT available WHERE rid = $1 AND computing = false RETURNING available", table), rid).Scan(&available)
 	if err != nil {
-		return false, errors.New("failed to update and retrieve resource availability")
+		if err == sql.ErrNoRows {
+			return false, errors.New("resource is currently computing")
+		}
+		return false, errors.New("failed to update resource availability")
 	}
 	return available, nil
 }
@@ -299,7 +302,7 @@ func GetResourceByID(db *sql.DB, rid string) (models.ResourceWithID, error) {
 	var resource models.ResourceWithID
 	table := getDBSchemaTable("resources")
 	err := db.QueryRow(fmt.Sprintf("SELECT rid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour, available, createdAt FROM %s WHERE rid = $1", table), rid).Scan(
-		&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
+		&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerMinute, &resource.Resource.Available, &resource.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return models.ResourceWithID{}, errors.New("resource not found")
@@ -321,7 +324,7 @@ func GetUserResources(db *sql.DB, uid string) ([]models.ResourceWithID, error) {
 	resources := []models.ResourceWithID{}
 	for rows.Next() {
 		var resource models.ResourceWithID
-		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerMinute, &resource.Resource.Available, &resource.CreatedAt)
 		if err != nil {
 			return nil, errors.New("failed to fetch resources")
 		}
@@ -362,7 +365,7 @@ func GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db *sql.DB, uid string, r
 	resources := []models.ResourceWithID{}
 	for rows.Next() {
 		var resource models.ResourceWithID
-		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerMinute, &resource.Resource.Available, &resource.CreatedAt)
 		if err != nil {
 			return nil, errors.New("failed to fetch resources")
 		}
@@ -372,17 +375,51 @@ func GetNextOrPrevTwentyAvailableResourcesFromGivenRID(db *sql.DB, uid string, r
 	return resources, nil
 }
 
-func InsertNewBid(db *sql.DB, uid string, bid models.Bid) (string, error) {
-	var id string
-
+func InsertNewBid(db *sql.DB, uid string, bid models.Bid) (models.BidWithID, string, error) {
 	// Check if the user has enough credits to place the bid
 	userCredits, err := GetUserCredits(db, uid)
 	if err != nil {
-		return "", errors.New("failed to retrieve user credits")
+		return models.BidWithID{}, "", err
+	}
+
+	resource, err := GetResourceByID(db, bid.RID)
+	if err != nil {
+		return models.BidWithID{}, "", err
+	}
+	if !resource.Resource.Available {
+		return models.BidWithID{}, "resource not available for bidding", errors.New("resource not available for bidding")
+	}
+
+	if resource.Resource.CostPerMinute > bid.Amount {
+		return models.BidWithID{}, "bid amount is less than the resource cost per minute", errors.New("bid amount is less than the resource cost per minute which is " + fmt.Sprintf("%.2f", resource.Resource.CostPerMinute))
+	}
+	if resource.Resource.Computing {
+		return models.BidWithID{}, "resource is currently computing", errors.New("resource is currently computing")
 	}
 
 	table := getDBSchemaTable("bids")
-	
+	// Check if the user has already placed a bid for the resource
+	var existingBid models.BidWithUID
+	err = db.QueryRow(fmt.Sprintf("SELECT bid, uid, rid, amount, duration, status, createdAt FROM %s WHERE rid = $1 AND status = 'pending'", table), bid.RID).Scan(&existingBid.BidWithID.BID, &existingBid.UID, &existingBid.BidWithID.Bid.RID, &existingBid.BidWithID.Bid.Amount, &existingBid.BidWithID.Bid.Duration, &existingBid.BidWithID.Status, &existingBid.BidWithID.CreatedAt)
+	if err != nil && err != sql.ErrNoRows {
+		return models.BidWithID{}, "", err
+	}
+	if err != sql.ErrNoRows {
+		if existingBid.Bid.Amount >= bid.Amount && existingBid.Bid.Duration >= bid.Duration {
+			if existingBid.UID == uid {
+				return models.BidWithID{}, "existing bid is better or equal", errors.New("your previous bid is better or equal with amount " + fmt.Sprintf("%.2f", existingBid.Bid.Amount) + " and duration " + fmt.Sprintf("%d", existingBid.Bid.Duration))
+			} else {
+				return models.BidWithID{}, "existing bid is better or equal", errors.New("better bid already placed by another user with amount " + fmt.Sprintf("%.2f", existingBid.Bid.Amount) + " and duration " + fmt.Sprintf("%d", existingBid.Bid.Duration))
+			}
+		} else {
+			// update the existing bid to rejected
+			_, err = db.Exec(fmt.Sprintf("UPDATE %s SET status = 'rejected' WHERE bid = $1", table), existingBid.BID)
+			if err != nil {
+				return models.BidWithID{}, "", err
+			}
+		}
+	}
+
 	// Query the bids table for all the pending and accepted & computing bids of the user
 	var totalPendingAmount, totalAcceptedAmount float64
 	err = db.QueryRow(fmt.Sprintf(`
@@ -392,20 +429,20 @@ func InsertNewBid(db *sql.DB, uid string, bid models.Bid) (string, error) {
 		FROM %s 
 		WHERE uid = $1`, table), uid).Scan(&totalPendingAmount, &totalAcceptedAmount)
 	if err != nil {
-		return "", errors.New("failed to retrieve pending and accepted bids")
+		return models.BidWithID{}, "", err
 	}
 
-	var totalAmount float64 = totalPendingAmount + totalAcceptedAmount + bid.Amount * float64(bid.Duration)
+	var totalAmount float64 = totalPendingAmount + totalAcceptedAmount + bid.Amount*float64(bid.Duration)
 	if userCredits < totalAmount {
-		return "credit problem", errors.New("insufficient credits to place bid, only " + fmt.Sprintf("%.2f", userCredits) + " credits available and your total bid amount is " + fmt.Sprintf("%.2f", totalAmount))
+		return models.BidWithID{}, "insufficient credits to place bid", errors.New("insufficient credits to place bid, only " + fmt.Sprintf("%.2f", userCredits) + " credits available and your total bid amount is " + fmt.Sprintf("%.2f", totalAmount))
 	}
-
-	err = db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, rid, amount, duration) VALUES ($1, $2, $3, $4) RETURNING bid", table),
-		uid, bid.RID, bid.Amount, bid.Duration).Scan(&id)
+	var newBid models.BidWithID
+	err = db.QueryRow(fmt.Sprintf("INSERT INTO %s (uid, rid, amount, duration) VALUES ($1, $2, $3, $4) RETURNING bid, rid, amount, duration, status, createdAt", table),
+		uid, bid.RID, bid.Amount, bid.Duration).Scan(&newBid.BID, &newBid.Bid.RID, &newBid.Bid.Amount, &newBid.Bid.Duration, &newBid.Status, &newBid.CreatedAt)
 	if err != nil {
-		return "", errors.New("failed to place bid")
+		return models.BidWithID{}, "", err
 	}
-	return id, nil
+	return newBid, "", nil
 }
 
 func GetBidOwner(db *sql.DB, bidId string) (string, error) {
@@ -469,9 +506,9 @@ func GetBidsForResource(db *sql.DB, rid string) ([]models.BidWithID, error) {
 	return bids, nil
 }
 
-func RemoveBidsForResource(db *sql.DB, rid string) error {
+func UpdateBidsForResourceInavailablity(db *sql.DB, rid string) error {
 	table := getDBSchemaTable("bids")
-	_, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rid = $1", table), rid)
+	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET status = 'rejected' WHERE rid = $1", table), rid)
 	if err != nil {
 		return err
 	}
@@ -552,7 +589,6 @@ func GetNumberOfAcceptedBidsCurrentlyRunning(db *sql.DB, uid string) (int, error
 	return count, nil
 }
 
-
 // bidding package logic
 func GetAllAvailableResourcesForBidding(db *sql.DB) ([]models.ResourceWithID, error) {
 	table := getDBSchemaTable("resources")
@@ -565,7 +601,7 @@ func GetAllAvailableResourcesForBidding(db *sql.DB) ([]models.ResourceWithID, er
 	resources := []models.ResourceWithID{}
 	for rows.Next() {
 		var resource models.ResourceWithID
-		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerHour, &resource.Resource.Available, &resource.CreatedAt)
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerMinute, &resource.Resource.Available, &resource.CreatedAt)
 		if err != nil {
 			return nil, errors.New("failed to fetch resources")
 		}
@@ -583,7 +619,7 @@ func GetMaxBidForResource(db *sql.DB, resourceID string) (models.BidWithUID, err
 	if err != nil {
 		return models.BidWithUID{}, errors.New("failed to update bids to processing status")
 	}
-	
+
 	err = db.QueryRow(fmt.Sprintf("SELECT bid, uid, rid, amount, duration, status, createdAt FROM %s WHERE rid = $1 ORDER BY amount DESC, duration DESC LIMIT 1", table), resourceID).Scan(
 		&maxBid.BidWithID.BID, &maxBid.UID, &maxBid.BidWithID.Bid.RID, &maxBid.BidWithID.Bid.Amount, &maxBid.BidWithID.Bid.Duration, &maxBid.BidWithID.Status, &maxBid.BidWithID.CreatedAt)
 	if err != nil {
@@ -609,14 +645,38 @@ func GetMaxBidForResource(db *sql.DB, resourceID string) (models.BidWithUID, err
 	return maxBid, nil
 }
 
-func FinishCompute(db *sql.DB, resourceID string, bid models.BidWithUID) error {
-	// Update the resource's computing flag to false
+func UpdateWinningBid(db *sql.DB, bid models.BidWithID) error {
+	table := getDBSchemaTable("bids")
+	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET status = 'accepted', computing = true WHERE bid = $1", table), bid.BID)
+	if err != nil {
+		return errors.New("failed to update bid status and computing flag")
+	}
+	// Update the resource's computing flag to true
 	resourceTable := getDBSchemaTable("resources")
-	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET computing = false WHERE rid = $1", resourceTable), resourceID)
+	_, err = db.Exec(fmt.Sprintf("UPDATE %s SET computing = true WHERE rid = $1", resourceTable), bid.Bid.RID)
 	if err != nil {
 		return errors.New("failed to update resource computing flag")
 	}
-	
+	return nil
+}
+
+func UpdateRejectedBid(db *sql.DB, bid models.BidWithID) error {
+	table := getDBSchemaTable("bids")
+	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET status = 'rejected' WHERE bid = $1", table), bid.BID)
+	if err != nil {
+		return errors.New("failed to update bid status")
+	}
+	return nil
+}
+
+func FinishCompute(db *sql.DB, resourceID string, bidUID string, bid models.BidWithID) error {
+	// Update the resource's computing flag to false
+	resourceTable := getDBSchemaTable("resources")
+	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET computing = false, available = false WHERE rid = $1", resourceTable), resourceID)
+	if err != nil {
+		return errors.New("failed to update resource computing flag")
+	}
+
 	// Update the bid's computing flag to false
 	bidTable := getDBSchemaTable("bids")
 	_, err = db.Exec(fmt.Sprintf("UPDATE %s SET computing = false WHERE bid = $1", bidTable), bid.BID)
@@ -632,7 +692,7 @@ func FinishCompute(db *sql.DB, resourceID string, bid models.BidWithUID) error {
 			WHEN uid = $1 THEN credits - $2
 			WHEN uid = $3 THEN credits + $2
 		END
-		WHERE uid IN ($1, $3)`, walletTable), bid.UID, bid.Bid.Amount, bid.Bid.RID)
+		WHERE uid IN ($1, $3)`, walletTable), bidUID, bid.Bid.Amount, bid.Bid.RID)
 	if err != nil {
 		return errors.New("failed to update credits for resource owner and bidding user")
 	}

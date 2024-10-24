@@ -1,17 +1,20 @@
 package models
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Resource represents a computing resource offered by a Supplier.
 type Resource struct {
-	CPUCores    int     `json:"cpuCores"`
-	Memory      int     `json:"memory"`    // in GB
-	Storage     int     `json:"storage"`   // in GB
-	GPU         string  `json:"gpu"`       // e.g., "NVIDIA GeForce RTX 3080"
-	Bandwidth   int     `json:"bandwidth"` // in Mbps
-	CostPerHour float64 `json:"costPerHour"`
-	Available   bool    `json:"available"`
-	Computing  bool    `json:"computing"`
+	CPUCores      int     `json:"cpuCores"`
+	Memory        int     `json:"memory"`    // in GB
+	Storage       int     `json:"storage"`   // in GB
+	GPU           string  `json:"gpu"`       // e.g., "NVIDIA GeForce RTX 3080"
+	Bandwidth     int     `json:"bandwidth"` // in Mbps
+	CostPerMinute float64 `json:"costPerHour"`
+	Available     bool    `json:"available"`
+	Computing     bool    `json:"computing"`
 }
 
 // ResourceWithID represents a computing resource with an ID.
@@ -38,8 +41,8 @@ type Bid struct {
 type BidWithID struct {
 	BID string `json:"bid"`
 	Bid
-	Status   string  `json:"status"`   // e.g., "pending", "accepted", "rejected"
-	Computing bool    `json:"computing"`
+	Status    string    `json:"status"` // e.g., "pending", "accepted", "rejected"
+	Computing bool      `json:"computing"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -69,4 +72,9 @@ type Tokens struct {
 type UserWallet struct {
 	UID    string  `json:"uid"`
 	Amount float64 `json:"amount"`
+}
+
+type BidWithLock struct {
+	MaxBid BidWithID
+	Lock   sync.Mutex
 }

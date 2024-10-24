@@ -4,11 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/gunrgnhsr/Cycloud/pkg/auth"
+	"github.com/gunrgnhsr/Cycloud/pkg/bidding"
 	pkg "github.com/gunrgnhsr/Cycloud/pkg/db"
 	"github.com/gunrgnhsr/Cycloud/pkg/models"
 )
@@ -25,8 +28,8 @@ func handleCORS(w http.ResponseWriter, r *http.Request, headers string, methods 
 
 	// Set CORS headers in the response
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", methods)
-	w.Header().Set("Access-Control-Allow-Headers", headers+", OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", methods+", OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", headers)
 
 	// Handle preflight requests
 	if r.Method == http.MethodOptions {
@@ -35,6 +38,17 @@ func handleCORS(w http.ResponseWriter, r *http.Request, headers string, methods 
 	}
 
 	return false
+}
+
+func handleSSERequestCORS(w http.ResponseWriter, r *http.Request, headers string, methods string) bool {
+	res := handleCORS(w, r, headers, methods)
+
+	// Set the headers for the Server-Sent Events connection
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	return res
 }
 
 // checkAuthorization checks if the request is authorized by validating the JWT token
@@ -264,7 +278,7 @@ func CreateResource(w http.ResponseWriter, r *http.Request) {
 }
 
 func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type", "PUT") {
+	if handleSSERequestCORS(w, r, "Authorization, content-type", "POST") {
 		return
 	}
 
@@ -298,23 +312,60 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 	// Update the resource availability in the database
 	available, err := pkg.UpdateResourceAvailability(db, rid)
 	if err != nil {
+		if(err.Error() == "resource is currently computing") {
+			http.Error(w, err.Error(), http.StatusPreconditionFailed)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	if !available {
-		// TODO: check for current running bid and act accordingly
-
-		err = pkg.RemoveBidsForResource(db, rid)
+		err = pkg.UpdateBidsForResourceInavailablity(db, rid)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		bidding.MakeResourceUnavailable(rid)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"message": "Availability changed"})
+	}else {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+			return
+		}
+		flusher.Flush()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func(resourcesID string) {
+			time.Sleep(1 * time.Minute)
+			bid, err := bidding.CheckBidsForResource(resourcesID)
+			if err != nil {
+				pkg.UpdateResourceAvailability(db, resourcesID)
+				fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "no bids for resource")
+				flusher.Flush()
+				<-r.Context().Done()
+				wg.Done()
+			} else {
+				fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "starting connection")
+				flusher.Flush()
+				// TODO: implement the connection from the accepted bid to the resource
+				duration := bid.Duration
+				timer := time.NewTimer(time.Duration(duration) * time.Minute)
+				go func() {
+					<-timer.C
+					defer wg.Done()
+					fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "connection ended")
+					flusher.Flush()
+					// TODO: implement the connection termination
+					<-r.Context().Done()
+				}()
+				wg.Wait()
+			}
+		}(rid)
+		wg.Wait()
 	}
-
-	// Return a success response
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Resource updated successfully"})
 }
 
 // DeleteResource handles the deletion of a resource by ID.
@@ -463,7 +514,7 @@ func GetResources(w http.ResponseWriter, r *http.Request) {
 
 // PlaceBid handles the placement of a bid on a resource.
 func PlaceBid(w http.ResponseWriter, r *http.Request) {
-	if handleCORS(w, r, "Authorization, content-type", "POST") {
+	if handleSSERequestCORS(w, r, "Authorization, content-type", "POST") {
 		return
 	}
 
@@ -486,19 +537,86 @@ func PlaceBid(w http.ResponseWriter, r *http.Request) {
 	db := getDB(r)
 
 	// Insert the bid into the database
-	bidId, err := pkg.InsertNewBid(db, uid, bid)
+	bidWithId, errType, err := pkg.InsertNewBid(db, uid, bid)
 	if err != nil {
-		if bidId == "credit problem" {
-			http.Error(w, err.Error(), http.StatusPaymentRequired)
-		}else{
+		if errType == "" {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if errType == "insufficient credits to place bid" {
+			http.Error(w, err.Error(), http.StatusPaymentRequired)
+		}
+		if errType == "resource is not available for bidding" {
+			http.Error(w, err.Error(), http.StatusPreconditionFailed)
+			return
+		}
+		if errType == "resource is currently computing" {
+			http.Error(w, err.Error(), http.StatusPreconditionFailed)
+			return
+		}
+		if errType == "bid amount is less than the resource cost per minute" {
+			http.Error(w, err.Error(), http.StatusPreconditionFailed)
+			return
+		}
+		if errType == "existing bid is better or equal" {
+			http.Error(w, err.Error(), http.StatusPreconditionFailed)
+			return
 		}
 		return
 	}
 
-	// Return a success response
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported!", http.StatusInternalServerError)
+		return
+	}
+
+	bidPtr := new(models.BidWithLock)
+	bidPtr.MaxBid = bidWithId
+	bidPtr.Lock = sync.Mutex{}
+
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Bid placed successfully", "bid_id": bidId})
+	// json.NewEncoder(w).Encode(map[string]interface{}{"bid": bidWithId.BID})
+	flusher.Flush()
+	var wg sync.WaitGroup
+	wg.Add(1) // Increment the WaitGroup counter
+	go func() {
+		bidding.BidForResource(bidPtr)
+		bidPtr.Lock.Lock()
+		if bidPtr.MaxBid.Status == "rejected" {
+			pkg.UpdateRejectedBid(db, bidPtr.MaxBid)
+			fmt.Fprintf(w, `{"data": "%s", "reason": "%s"}`+"\n\n", "bid is rejected", "A better bid with amount: "+fmt.Sprintf("%f", bidPtr.MaxBid.Amount)+" and duration: "+fmt.Sprintf("%d", bidPtr.MaxBid.Duration))
+			flusher.Flush()
+			<-r.Context().Done()
+			wg.Done()
+			return
+		} else {
+			err = pkg.UpdateWinningBid(db, bidPtr.MaxBid)
+			if err != nil {
+				fmt.Fprintf(w, `{"data": "%s", "reason": "%s"}`+"\n\n", "error occured", err.Error())
+				flusher.Flush()
+				<-r.Context().Done()
+				wg.Done()
+				return
+			}
+			fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "starting connection")
+			flusher.Flush()
+			// TODO: implement the connection from the accepted bid to the resource
+			duration := bidPtr.MaxBid.Duration
+			timer := time.NewTimer(time.Duration(duration) * time.Minute)
+			go func() {
+				<-timer.C
+				fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "connection ended")
+				flusher.Flush()
+				// TODO: implement the connection termination
+				err = pkg.FinishCompute(db, bidPtr.MaxBid.RID, uid, bidPtr.MaxBid)
+				<-r.Context().Done()
+				wg.Done()
+			}()
+			wg.Wait()
+		}
+	}()
+	wg.Wait()
 }
 
 // GetUserBids handles the retrieval of all bids.
@@ -666,11 +784,11 @@ func GetUserInfo(w http.ResponseWriter, r *http.Request) {
 	// Return the credits data
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"credits":          credits,
-		"resources":        resources,
+		"credits":         credits,
+		"resources":       resources,
 		"activeResources": activeResources,
-		"pendingBids":    pendingBids,
-		"activeLoans":    activeLoans,
+		"pendingBids":     pendingBids,
+		"activeLoans":     activeLoans,
 	})
 }
 
@@ -707,7 +825,7 @@ func AddCredits(w http.ResponseWriter, r *http.Request) {
 	db := getDB(r)
 
 	// Add the credits to the user's account
-	_ ,err = pkg.UpdateUserCredits(db, uid, credits.Amount)
+	_, err = pkg.UpdateUserCredits(db, uid, credits.Amount)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
