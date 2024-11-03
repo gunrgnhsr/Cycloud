@@ -3,6 +3,8 @@ package models
 import (
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Resource represents a computing resource offered by a Supplier.
@@ -77,4 +79,9 @@ type UserWallet struct {
 type BidWithLock struct {
 	MaxBid BidWithID
 	Lock   sync.Mutex
+	LoanerWS *websocket.Conn
+	RenterWS *websocket.Conn
 }
+
+const Renter = true
+const Loaner = !Renter

@@ -9,12 +9,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/gorilla/mux"
 	"github.com/gunrgnhsr/Cycloud/pkg/auth"
 	"github.com/gunrgnhsr/Cycloud/pkg/bidding"
 	pkg "github.com/gunrgnhsr/Cycloud/pkg/db"
 	"github.com/gunrgnhsr/Cycloud/pkg/models"
 )
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
 // get db connection from context
 func getDB(r *http.Request) *sql.DB {
@@ -51,14 +60,7 @@ func handleSSERequestCORS(w http.ResponseWriter, r *http.Request, headers string
 	return res
 }
 
-// checkAuthorization checks if the request is authorized by validating the JWT token
-func checkAuthorization(r *http.Request) (string, error) {
-	// Get the token from the Authorization header
-	tokenString := r.Header.Get("Authorization")
-	if tokenString == "" {
-		return "", errors.New("missing token")
-	}
-
+func checkAuthorizationWithToken(r *http.Request, tokenString string) (string, error) {
 	// Validate the token
 	claims, err := auth.ValidateJWT(tokenString)
 	if err != nil {
@@ -82,6 +84,17 @@ func checkAuthorization(r *http.Request) (string, error) {
 
 	// Return the username in the response
 	return uid, nil
+}
+
+// checkAuthorization checks if the request is authorized by validating the JWT token
+func checkAuthorization(r *http.Request) (string, error) {
+	// Get the token from the Authorization header
+	tokenString := r.Header.Get("Authorization")
+	if tokenString == "" {
+		return "", errors.New("missing token")
+	}
+
+	return checkAuthorizationWithToken(r, tokenString)
 }
 
 func checkThatResourceBelongsToUser(r *http.Request, uid string, rid string) error {
@@ -833,4 +846,182 @@ func AddCredits(w http.ResponseWriter, r *http.Request) {
 	// Return a success response
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Credits added successfully"})
+}
+
+func PassConnectionOffer(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, "Upgrade error", http.StatusInternalServerError)
+		return
+	}
+	defer ws.Close()
+	
+	token := mux.Vars(r)["token"]
+	if token == "" {
+		ws.WriteJSON(map[string]interface{}{"error": "Missing token"})
+		return
+	}
+
+	uid, err := checkAuthorizationWithToken(r, token)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Parse the request body to get the resource details
+	rid := mux.Vars(r)["rid"]
+	if rid == "" {
+		ws.WriteJSON(map[string]interface{}{"error": "Missing resource ID"})
+		return
+	}
+
+	err = checkThatResourceBelongsToUser(r, uid, rid)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	winningBid, err := bidding.GetMaxBidForResource(rid)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	err = bidding.RegisterP2PConnection(models.Renter, rid, ws)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var loanerWS *websocket.Conn
+	duration := winningBid.Duration*int(time.Minute) // Duration in seconds
+	for i := 0; i < duration; i++ {
+		loanerWS, err = bidding.GetPeerWS(rid, models.Renter)		
+		if err != nil {
+			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		if loanerWS != nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	if loanerWS == nil {
+		ws.WriteJSON(map[string]interface{}{"error": "Renter not found"})
+		// TODO: charge the user for the bid
+		return
+	}
+
+	ws.WriteJSON(map[string]interface{}{"type": "start"})
+
+	for {
+		var msg map[string]interface{}
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			break
+		}
+
+		switch msg["type"] {
+		case "offer", "iceCandidates":
+			err = loanerWS.WriteJSON(msg)
+			if err != nil {
+				ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			}
+		default:
+			ws.WriteJSON(map[string]interface{}{"error": "Unknown message type"})
+		}
+	}
+}
+
+
+
+func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, "Upgrade error", http.StatusInternalServerError)
+		return
+	}
+	defer ws.Close()
+	
+	token := mux.Vars(r)["token"]
+	if token == "" {
+		ws.WriteJSON(map[string]interface{}{"error": "Missing token"})
+		return
+	}
+
+	uid, err := checkAuthorizationWithToken(r, token)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	// Parse the request body to get the resource details
+	rid := mux.Vars(r)["rid"]
+	if rid == "" {
+		ws.WriteJSON(map[string]interface{}{"error": "Missing resource ID"})
+		return
+	}
+
+	err = checkThatTheresABidForTheResourceByUser(r, rid, uid)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	winningBid, err := bidding.GetMaxBidForResource(rid)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	err = checkThatBidBelongsToUser(r, uid, winningBid.BID)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	err = bidding.RegisterP2PConnection(models.Loaner, rid, ws)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	var renterWS *websocket.Conn
+	duration := winningBid.Duration*int(time.Minute) // Duration in seconds
+	for i := 0; i < duration; i++ {
+		renterWS, err = bidding.GetPeerWS(rid, models.Loaner)		
+		if err != nil {
+			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			return
+		}
+		if renterWS != nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	if renterWS == nil {
+		ws.WriteJSON(map[string]interface{}{"error": "Renter not found"})
+		// TODO: don't charge the user for the bid
+		return
+	}
+
+	for {
+		var msg map[string]interface{}
+		err := ws.ReadJSON(&msg)
+		if err != nil {
+			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			break
+		}
+
+		switch msg["type"] {
+		case "answer", "iceCandidates":
+			err = renterWS.WriteJSON(msg)
+			if err != nil {
+				ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+			}
+		default:
+			ws.WriteJSON(map[string]interface{}{"error": "Unknown message type"})
+		}
+	}
 }

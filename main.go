@@ -93,6 +93,14 @@ func main() {
 			handlers.AddCredits(w, addDBToContext(db, r))
 	})
 
+	muxRouter.HandleFunc("/accept-connection-offer/{rid}/{token}", func(w http.ResponseWriter, r *http.Request) {
+		handlers.PassConnectionAnswer(w, addDBToContext(db, r))
+	})
+
+	muxRouter.HandleFunc("/make-connection-offer/{rid}/{token}", func(w http.ResponseWriter, r *http.Request) {
+		handlers.PassConnectionOffer(w, addDBToContext(db, r))
+	})
+
 	// Create a server instance
 	server := &http.Server{
 		Addr:    ":3001",
