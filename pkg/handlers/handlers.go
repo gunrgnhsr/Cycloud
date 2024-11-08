@@ -363,7 +363,6 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 			} else {
 				fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "starting connection")
 				flusher.Flush()
-				// TODO: implement the connection from the accepted bid to the resource
 				duration := bid.Duration
 				timer := time.NewTimer(time.Duration(duration) * time.Minute)
 				go func() {
@@ -371,7 +370,6 @@ func UpdateResourceAvailability(w http.ResponseWriter, r *http.Request) {
 					defer wg.Done()
 					fmt.Fprintf(w, `{"data": "%s"}`+"\n\n", "connection ended")
 					flusher.Flush()
-					// TODO: implement the connection termination
 					<-r.Context().Done()
 				}()
 				wg.Wait()
