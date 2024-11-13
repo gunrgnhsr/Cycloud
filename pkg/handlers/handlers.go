@@ -131,6 +131,23 @@ func checkThatBidBelongsToUser(r *http.Request, uid string, bidId string) error 
 	return nil
 }
 
+func checkThatTaskBelongsToUser(r *http.Request, uid string, tid string) error {
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Check if the task belongs to the user
+	ownerUID, err := pkg.GetTaskOwner(db, tid)
+	if err != nil {
+		return err
+	}
+
+	if ownerUID != uid {
+		return errors.New("task does not belong to user")
+	}
+
+	return nil
+}
+
 func checkThatTheresABidForTheResourceByUser(r *http.Request, rid string, uid string) error {
 	// Get the database connection from the request context
 	db := getDB(r)
@@ -932,8 +949,6 @@ func PassConnectionOffer(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-
-
 func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -1022,4 +1037,156 @@ func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
 			ws.WriteJSON(map[string]interface{}{"error": "Unknown message type"})
 		}
 	}
+}
+
+func GetNonExclusiveTasks(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "GET") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Get the non-exclusive tasks
+	tasks, err := pkg.GetNonExclusiveTasks(db, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return the tasks data
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(tasks)
+}
+
+func AddTask(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
+		return
+	}
+
+	// Check if the request is authorized
+	uid, err := checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the task details
+	var task models.Task
+	err = json.NewDecoder(r.Body).Decode(&task)
+	if err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Insert the task into the database
+	err = pkg.InsertNewTask(db, task, uid)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success response
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Task created successfully"})
+}
+
+func RemoveTask(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "DELETE") {
+		return
+	}
+
+	// Check if the request is authorized
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the task details
+	taskID := mux.Vars(r)["tid"]
+	if taskID == "" {
+		http.Error(w, "Missing task ID", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the task belongs to the user
+	err = checkThatTaskBelongsToUser(r, uid, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Remove the task from the database
+	err = pkg.RemoveTask(db, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Task removed successfully"})
+}
+
+func ChangeTaskExclusivity(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization, content-type", "POST") {
+		return
+	}
+
+	// Check if the request is authorized
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Parse the request body to get the task details
+	taskID := mux.Vars(r)["tid"]
+	if taskID == "" {
+		http.Error(w, "Missing task ID", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the task belongs to the user
+	err = checkThatTaskBelongsToUser(r, uid, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Change the task exclusivity in the database
+	err = pkg.ChangeTaskExclusivity(db, taskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return a success response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{"message": "Task exclusivity changed successfully"})
 }

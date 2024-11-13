@@ -101,6 +101,22 @@ func main() {
 		handlers.PassConnectionOffer(w, addDBToContext(db, r))
 	})
 
+	muxRouter.HandleFunc("/get-non-exclusive-tasks", func(w http.ResponseWriter, r *http.Request) {
+		handlers.GetNonExclusiveTasks(w, addDBToContext(db, r))
+	})
+
+	muxRouter.HandleFunc("/add-user-task", func(w http.ResponseWriter, r *http.Request) {
+		handlers.AddTask(w, addDBToContext(db, r))
+	})
+
+	muxRouter.HandleFunc("/delete-user-task/{tid}", func(w http.ResponseWriter, r *http.Request) {
+		handlers.RemoveTask(w, addDBToContext(db, r))
+	})
+
+	muxRouter.HandleFunc("/update-task-exclusivity/{tid}", func(w http.ResponseWriter, r *http.Request) {
+		handlers.ChangeTaskExclusivity(w, addDBToContext(db, r))
+	})
+
 	// Create a server instance
 	server := &http.Server{
 		Addr:    ":3001",

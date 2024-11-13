@@ -100,6 +100,20 @@ func setTables(db *sql.DB, dbSchema string) error {
 								FOREIGN KEY (rid) REFERENCES ` + dbSchema + `.resources(rid)
 						)`,
 		},
+		{
+			name: "tasks",
+			schema: `CREATE TABLE ` + dbSchema + `.tasks (
+								tid SERIAL PRIMARY KEY,
+								uid INTEGER NOT NULL,
+								code TEXT,
+								functionName TEXT,
+								numberOfInputs INTEGER NOT NULL CHECK (numberOfInputs >= 0),
+								numberOfOutputs INTEGER NOT NULL CHECK (numberOfOutputs >= 1),
+								exclusive BOOLEAN DEFAULT true,
+								createdAt TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+								FOREIGN KEY (uid) REFERENCES ` + dbSchema + `.users(uid)
+						)`,
+		},
 	}
 
 	for _, table := range tables {
@@ -698,4 +712,63 @@ func FinishCompute(db *sql.DB, resourceID string, bidUID string, bid models.BidW
 	}
 
 	return nil
+}
+
+func InsertNewTask(db *sql.DB, task models.Task, uid string) error {
+	table := getDBSchemaTable("tasks")
+	_, err := db.Exec(fmt.Sprintf("INSERT INTO %s (uid, code, functionName, numberOfInputs, numberOfOutputs) VALUES ($1, $2, $3, $4, $5)", table),
+		uid, task.Code, task.FunctionName, task.NumberOfInputs, task.NumberOfOutputs)
+	if err != nil {
+		return errors.New("failed to insert new task")
+	}
+	return nil
+}
+
+func RemoveTask(db *sql.DB, tid string) error {
+	table := getDBSchemaTable("tasks")
+	_, err := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE tid = $1", table), tid)
+	if err != nil {
+		return errors.New("failed to delete task")
+	}
+	return nil
+}
+
+func ChangeTaskExclusivity(db *sql.DB, tid string) error {
+	table := getDBSchemaTable("tasks")
+	_, err := db.Exec(fmt.Sprintf("UPDATE %s SET exclusive = NOT exclusive WHERE tid = $1", table), tid)
+	if err != nil {
+		return errors.New("failed to change task exclusivity")
+	}
+	return nil
+}
+
+func GetNonExclusiveTasks(db *sql.DB, uid string) ([]models.TaskWithID, error) {
+	table := getDBSchemaTable("tasks")
+	rows, err := db.Query(fmt.Sprintf("SELECT tid, code, functionName, numberOfInputs, numberOfOutputs, exclusive, createdAt FROM %s WHERE exclusive = false OR uid = $1 ORDER BY tid", table), uid)
+	if err != nil {
+		return nil, errors.New("failed to fetch tasks")
+	}
+	defer rows.Close()
+
+	tasks := []models.TaskWithID{}
+	for rows.Next() {
+		var task models.TaskWithID
+		err := rows.Scan(&task.TID, &task.Code, &task.FunctionName, &task.NumberOfInputs, &task.NumberOfOutputs, &task.Exclusive, &task.CreatedAt)
+		if err != nil {
+			return nil, errors.New("failed to fetch tasks")
+		}
+		tasks = append(tasks, task)
+	}
+
+	return tasks, nil
+}
+
+func GetTaskOwner(db *sql.DB, tid string) (string, error) {
+	var uid string
+	table := getDBSchemaTable("tasks")
+	err := db.QueryRow(fmt.Sprintf("SELECT uid FROM %s WHERE tid = $1", table), tid).Scan(&uid)
+	if err != nil {
+		return "", err
+	}
+	return uid, nil
 }

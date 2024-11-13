@@ -83,5 +83,24 @@ type BidWithLock struct {
 	RenterWS *websocket.Conn
 }
 
+type Task struct {
+	Code string `json:"code"`
+	FunctionName string `json:"functionName"`
+	NumberOfInputs int `json:"numberOfInputs"`
+	NumberOfOutputs int `json:"numberOfOutputs"`
+	Exclusive bool `json:"exclusive"`
+}
+
+type TaskWithID struct {
+	TID string `json:"tid"`
+	Task
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type TaskWithUID struct {
+	UID string `json:"uid"`
+	TaskWithID
+}
+
 const Renter = true
 const Loaner = !Renter
