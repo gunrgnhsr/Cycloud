@@ -489,6 +489,42 @@ func GetUserResource(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resource)
 }
 
+func GetActivlyRentedResources(w http.ResponseWriter, r *http.Request) {
+	if handleCORS(w, r, "Authorization", "GET") {
+		return
+	}
+
+	// Check if the request is authorized
+	var (
+		uid string
+		err error
+	)
+	uid, err = checkAuthorization(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	// Get the database connection from the request context
+	db := getDB(r)
+
+	// Fetch the resource from the database
+	resource, err := pkg.GetActivlyRentedResources(db, uid)
+	if err != nil {
+		if err.Error() == "Failed to fetch resource" {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if err.Error() == "Resource not found" {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+	}
+
+	// Return the resource data
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resource)
+}
+
 // GetResources handles the retrieval of all resources.
 func GetResources(w http.ResponseWriter, r *http.Request) {
 	if handleCORS(w, r, "Authorization", "GET") {
@@ -890,7 +926,7 @@ func PassConnectionOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = checkThatResourceBelongsToUser(r, uid, rid)
+	err = checkThatTheresABidForTheResourceByUser(r, rid, uid)
 	if err != nil {
 		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 		return
@@ -902,28 +938,34 @@ func PassConnectionOffer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = bidding.RegisterP2PConnection(models.Renter, rid, ws)
+	err = checkThatBidBelongsToUser(r, uid, winningBid.BID)
+	if err != nil {
+		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	err = bidding.RegisterP2PConnection(models.Loaner, rid, ws)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var loanerWS *websocket.Conn
+	var renterWS *websocket.Conn
 	duration := winningBid.Duration*int(time.Minute) // Duration in seconds
 	for i := 0; i < duration; i++ {
-		loanerWS, err = bidding.GetPeerWS(rid, models.Renter)		
+		renterWS, err = bidding.GetPeerWS(rid, models.Loaner)		
 		if err != nil {
 			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 			return
 		}
-		if loanerWS != nil {
+		if renterWS != nil {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	if loanerWS == nil {
+	if renterWS == nil {
 		ws.WriteJSON(map[string]interface{}{"error": "Renter not found"})
-		// TODO: charge the user for the bid
+		// TODO: dont charge the loaner for the bid
 		return
 	}
 
@@ -939,7 +981,7 @@ func PassConnectionOffer(w http.ResponseWriter, r *http.Request) {
 
 		switch msg["type"] {
 		case "offer", "iceCandidates":
-			err = loanerWS.WriteJSON(msg)
+			err = renterWS.WriteJSON(msg)
 			if err != nil {
 				ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 			}
@@ -976,7 +1018,7 @@ func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = checkThatTheresABidForTheResourceByUser(r, rid, uid)
+	err = checkThatResourceBelongsToUser(r, uid, rid)
 	if err != nil {
 		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 		return
@@ -988,34 +1030,28 @@ func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = checkThatBidBelongsToUser(r, uid, winningBid.BID)
+	err = bidding.RegisterP2PConnection(models.Renter, rid, ws)
 	if err != nil {
 		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 		return
 	}
 
-	err = bidding.RegisterP2PConnection(models.Loaner, rid, ws)
-	if err != nil {
-		ws.WriteJSON(map[string]interface{}{"error": err.Error()})
-		return
-	}
-
-	var renterWS *websocket.Conn
+	var loanerWS *websocket.Conn
 	duration := winningBid.Duration*int(time.Minute) // Duration in seconds
 	for i := 0; i < duration; i++ {
-		renterWS, err = bidding.GetPeerWS(rid, models.Loaner)		
+		loanerWS, err = bidding.GetPeerWS(rid, models.Renter)		
 		if err != nil {
 			ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 			return
 		}
-		if renterWS != nil {
+		if loanerWS != nil {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
-	if renterWS == nil {
-		ws.WriteJSON(map[string]interface{}{"error": "Renter not found"})
-		// TODO: don't charge the user for the bid
+	if loanerWS == nil {
+		ws.WriteJSON(map[string]interface{}{"error": "Loaner not found"})
+		// TODO: charge the renter for the bid
 		return
 	}
 
@@ -1029,7 +1065,7 @@ func PassConnectionAnswer(w http.ResponseWriter, r *http.Request) {
 
 		switch msg["type"] {
 		case "answer", "iceCandidates":
-			err = renterWS.WriteJSON(msg)
+			err = loanerWS.WriteJSON(msg)
 			if err != nil {
 				ws.WriteJSON(map[string]interface{}{"error": err.Error()})
 			}

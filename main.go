@@ -53,6 +53,10 @@ func main() {
 		handlers.GetUserResource(w, addDBToContext(db, r))
 	})
 
+	muxRouter.HandleFunc("/get-activly-rented-resources", func(w http.ResponseWriter, r *http.Request) {
+		handlers.GetActivlyRentedResources(w, addDBToContext(db, r))
+	})
+
 	muxRouter.HandleFunc("/add-user-resources", func(w http.ResponseWriter, r *http.Request) {
 		handlers.CreateResource(w, addDBToContext(db, r))
 	})

@@ -348,6 +348,27 @@ func GetUserResources(db *sql.DB, uid string) ([]models.ResourceWithID, error) {
 	return resources, nil
 }
 
+func GetActivlyRentedResources(db *sql.DB, uid string) ([]models.ResourceWithID, error) {
+	table := getDBSchemaTable("resources")
+	rows, err := db.Query(fmt.Sprintf("SELECT rid, cpu_cores, memory, storage, gpu, bandwidth, cost_per_hour, available, computing, createdAt FROM %s WHERE uid = $1 AND computing = true ORDER BY rid", table), uid)
+	if err != nil {
+		return nil, errors.New("failed to fetch resources")
+	}
+	defer rows.Close()
+
+	resources := []models.ResourceWithID{}
+	for rows.Next() {
+		var resource models.ResourceWithID
+		err := rows.Scan(&resource.RID, &resource.Resource.CPUCores, &resource.Resource.Memory, &resource.Resource.Storage, &resource.Resource.GPU, &resource.Resource.Bandwidth, &resource.Resource.CostPerMinute, &resource.Resource.Available, &resource.Resource.Computing, &resource.CreatedAt)
+		if err != nil {
+			return nil, errors.New("failed to fetch resources")
+		}
+		resources = append(resources, resource)
+	}
+
+	return resources, nil
+}
+
 func GetResourceOwner(db *sql.DB, rid string) (string, error) {
 	var uid string
 	table := getDBSchemaTable("resources")

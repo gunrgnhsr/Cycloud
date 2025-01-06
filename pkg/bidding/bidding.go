@@ -44,7 +44,11 @@ func GetMaxBidForResource(resourceID string) (models.BidWithID, error) {
 	defer mapMutex.Unlock()
 	bid, exists := resourceMaxBidMap[resourceID]
 	if exists {
-		return bid.MaxBid, nil
+		if(bid.MaxBid.Status == "accepted") {
+			return bid.MaxBid, nil
+		} else {
+			return models.BidWithID{}, errors.New("bid not selcted yet")
+		}
 	}
 	return models.BidWithID{}, errors.New("resource not found")
 }
